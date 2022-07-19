@@ -1,0 +1,7 @@
+dist-newstyle/
+.nvim/
+.stack-work/
+dist/
+dist-newstyle/
+.ghc*
+cabal.project.local
