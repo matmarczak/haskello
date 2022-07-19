@@ -4,4 +4,4 @@ dist-newstyle/
 dist/
 dist-newstyle/
 .ghc*
-cabal.project.local
+cabal.project.local*
