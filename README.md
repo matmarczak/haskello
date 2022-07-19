@@ -43,25 +43,26 @@ Haskello implements quasi-vim bindings:
 ```
 ── src
     ├── Cursor.hs           - Datatype for screen (handles: new items, cursor position, items order etc.)
-    ├── Event.hs            - Main dispatcher that handles inputs and act on state
-    ├── Haskello.hs         - Brick definitions, entrypoint to application definition
+    ├── Event.hs            - Main dispatcher that handles inputs and acts on state
+    ├── Haskello.hs         - Brick definitions, entrypoint to application
     ├── State               - Modules related to application state
-    │   ├── AppState.hs     - Main AppState hadndling (init, operations on `LocalTrello`)
-    │   ├── Changelist.hs   - Changes done to items (new/edited/deleted items)
-    │   ├── Editor.hs       - Text input handling for edited items
-    │   └── Types.hs        - Important types
-    ├── TrelloApi.hs        - IO handling for Trello Rest API
-    ├── TrelloTypes.hs      - Core types for Trello entities used in entire application
-    └── UI.hs               - redndering logic
+    │   ├── AppState.hs     - Main AppState hadnling (init, operations on `LocalTrello`)
+    │   ├── Changelist.hs   - Tracks changes done to items (new/edited/deleted items)
+    │   ├── Editor.hs       - Text input for new/edited items
+    │   └── Types.hs        - Essential state types
+    ├── Trello              - All pieces needed for interaction with Trello API
+    │   ├── Api.hs          - Wrapper around API endpoints
+    │   ├── Types.hs        - Trello types
+    └── UI.hs               - Rendering logic
 ```
 
 ## Design
 
-Main idea is to store server state in `LocalTrello` datatype and all changes
-done to it in `Changelist`. This way all changes are tracked and separated
-from main data storage.
+Main idea is to store server state in `LocalTrello` datatype and changes
+of state in `Changelist`. This way all changes are tracked and separated
+from main storage.
 
-Every view presents screen with related items (eg. list of boards or cards).
-Screen is created on enter from `LocalTrello` storage and `Changelist`.
-Edited item are populated to `Changelist` and screen. `Changelist` is also used
+Every view presents screen with related items (eg. list of boards or list of cards).
+Screen is created on enter from `LocalTrello` storage type and `Changelist`.
+Edited items are populated to `Changelist` and screen. `Changelist` is also used
 as source of truth for server sync.
