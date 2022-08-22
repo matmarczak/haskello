@@ -2,7 +2,7 @@
 
 ## Screencast
 
-[![asciicast](https://asciinema.org/a/pMXqcFaFteXZ67dBjFNxl32Ws.svg)](https://asciinema.org/a/pMXqcFaFteXZ67dBjFNxl32Ws?loop=1&autoplay=1)
+[![asciicast](https://asciinema.org/a/pMXqcFaFteXZ67dBjFNxl32Ws.svg)](https://asciinema.org/a/ZD10g59pEmoWC1zf4vb232rXY?loop=1&autoplay=1)
 
 ## Usage
 
