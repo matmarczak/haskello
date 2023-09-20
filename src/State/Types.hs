@@ -1,5 +1,6 @@
 module State.Types where
 
+import Brick.BChan (BChan)
 import Brick.Widgets.Edit (Editor)
 import Cursor (Cursor)
 import Data.Text (Text)
@@ -33,8 +34,9 @@ data AppState =
     , changes :: [Change]
     , modal :: Maybe String
     , header :: String
+    , bchan :: BChan HaskelloEvent
     }
-  deriving (Show)
+  -- deriving (Show)
 
 data LocalTrello =
   LocalTrello
@@ -43,3 +45,7 @@ data LocalTrello =
     , listCards :: [Card]
     }
   deriving (Show)
+
+data HaskelloEvent
+  = HaskelloEvent Change
+  | Str String

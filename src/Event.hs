@@ -4,9 +4,11 @@
 
 module Event where
 
+import Brick.BChan (writeBChan)
 import Brick.Main (continue, halt)
-import Brick.Types (BrickEvent(VtyEvent), EventM, Next)
+import Brick.Types (BrickEvent(AppEvent, VtyEvent), EventM, Next)
 import Brick.Widgets.Edit (applyEdit)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad.IO.Class (liftIO)
 import Cursor
   ( Cursor
@@ -36,6 +38,7 @@ import State.AppState
   ( addCards
   , addLists
   , applyChanges
+  , applyLocalTrelloChanges
   , buildInitialState
   , getChildren
   , makeScreen
@@ -54,6 +57,7 @@ import State.Types
   , EditorState(showEditor)
   , EditorState(..)
   , FieldLifecycle(..)
+  , HaskelloEvent(HaskelloEvent, Str)
   , ResourceName
   )
 import Trello.Api
@@ -75,15 +79,16 @@ import Trello.Types
   , setPos
   )
 
+-- todo rename PostProcessed to WithHeader
 handleUIEventPostProcessed ::
      AppState
-  -> BrickEvent ResourceName e
+  -> BrickEvent ResourceName HaskelloEvent
   -> EventM ResourceName (Next AppState)
 handleUIEventPostProcessed = (fmap . fmap . fmap) updateHeader . handleUIEvent
 
 handleUIEvent ::
      AppState
-  -> BrickEvent ResourceName e
+  -> BrickEvent ResourceName HaskelloEvent
   -> EventM ResourceName (Next AppState)
 handleUIEvent s@AppState {screen = []} _ =
   continue $ s {modal = Just "Unable to handle event with no screens"}
@@ -223,7 +228,19 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
                    EvKey (KChar 'b') [] -> do
                      liftIO $ print changes
                      continue s
+                   EvKey (KChar 'x') [] -> do
+                     liftIO $ (writeBChan (bchan s) (Str "Starter"))
+                     continue s
                    _ -> continue s
+    AppEvent e ->
+      case e of
+        HaskelloEvent e' -> continue s
+        Str str -> do
+          let bchanPut =
+                threadDelay (2 * (10 ^ 6)) >>
+                writeBChan (bchan s) (Str "GOt YOU")
+          a <- liftIO $ forkIO bchanPut
+          continue $ s {modal = Just $ show a ++ str}
     _ -> continue s
 
 saveChange :: Change -> IO (Either String TrelloItem)
@@ -402,7 +419,10 @@ handleOpenItem s@AppState { screen = screens@(screen:_)
             TCard _ -> continue s {modal = Just "No item to open"}
 
 saveStateToServer :: AppState -> IO (Bool, AppState)
-saveStateToServer state@AppState {changes = changes} =
+saveStateToServer state@AppState { changes = changes
+                                 , bchan = bchan
+                                 , serverData = serverData
+                                 } =
   let orderedChanges =
         Data.List.sortOn
           ((\(Change _ titem) ->
@@ -417,19 +437,27 @@ saveStateToServer state@AppState {changes = changes} =
           result <- liftIO $ rollSaveChanges (Right ([], orderedChanges))
           case result of
             Left (err, leftChanges) -> do
-              newState <- liftIO buildInitialState
+              newState <- liftIO $ buildInitialState bchan
               return (False, newState {changes = leftChanges, modal = Just err})
-            Right (_, []) -> do
-              newState <- liftIO buildInitialState
+            Right (synced, []) -> do
+              let newTrelloData =
+                    applyLocalTrelloChanges
+                      (map (\tuple -> fmap Just tuple) synced)
+                      serverData
+              newState <- liftIO $ buildInitialState bchan
               return
                 ( True
                 , newState
-                    {changes = [], modal = Just "Changes saved successfully!"})
+                    { changes = []
+                    , modal = Just "Changes saved successfully!"
+                    , serverData = newTrelloData
+                    })
             Right (_, _) ->
               error
                 "Any unsaved changes should result in Left. Got Right instead!"
 
-type SyncedChanges = Either (String, [Change]) ([TrelloItem], [Change])
+type SyncedChanges
+   = Either (String, [Change]) ([(Change, TrelloItem)], [Change])
 
 rollSaveChanges :: SyncedChanges -> IO SyncedChanges
 rollSaveChanges s@(Left _) = return s
@@ -441,7 +469,9 @@ rollSaveChanges (Right (items, fstChange:rest)) = do
     Right res ->
       let (Change _ oldItem) = fstChange
        in rollSaveChanges $
-          Right (res : items, updateChangelistChildren oldItem res rest)
+          Right
+            ( (fstChange, res) : items
+            , updateChangelistChildren oldItem res rest)
 
 renderShortcuts :: [(String, String)] -> String
 renderShortcuts shortcutsList =

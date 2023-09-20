@@ -24,7 +24,7 @@ import State.Types
 import Trello.Types (TrelloEntry(editName))
 
 handleEditorInput :: Event -> AppState -> EventM ResourceName (Next AppState)
-handleEditorInput _ s@AppState { screen = [] } = continue s
+handleEditorInput _ s@AppState {screen = []} = continue s
 handleEditorInput vtye s@AppState { screen = (screen:restScr)
                                   , screenEditor = editorStt@EditorState { editorField = editorField
                                                                          , fieldLifecycle = fieldLifecycle

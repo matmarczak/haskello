@@ -2,6 +2,7 @@
 
 module State.AppState where
 
+import Brick.BChan (BChan)
 import Control.Monad (join)
 import Cursor
 import Data.List (intercalate, sortOn)
@@ -40,8 +41,8 @@ getParents trello items =
     TList _ -> Just $ map TBoard $ boards trello
     TCard _ -> Just $ map TList $ lists trello
 
-applyChange :: Change -> LocalTrello -> LocalTrello
-applyChange change (LocalTrello boards lists cards) =
+localTrelloChange :: (Change, Maybe TrelloItem) -> LocalTrello -> LocalTrello
+localTrelloChange (change, maybeItem) (LocalTrello boards lists cards) =
   let Change operation item = change
       updateFunc idGetter =
         case operation of
@@ -54,13 +55,22 @@ applyChange change (LocalTrello boards lists cards) =
                       then ch
                       else el))
           Delete -> (\ch -> filter (\el -> idGetter el /= idGetter ch))
-   in case item of
+      targetItem =
+        case maybeItem of
+          Nothing -> item
+          Just tItem -> tItem
+   in case targetItem of
         TBoard b -> LocalTrello (updateFunc boardId b boards) lists cards
         TList l -> LocalTrello boards (updateFunc listId l lists) cards
         TCard c -> LocalTrello boards lists (updateFunc cardId c cards)
 
 applyChanges :: [Change] -> LocalTrello -> LocalTrello
-applyChanges changes trello = foldr applyChange trello changes
+applyChanges changes trello =
+  foldr localTrelloChange trello (map (\ch -> (ch, Nothing)) changes)
+
+applyLocalTrelloChanges ::
+     [(Change, Maybe TrelloItem)] -> LocalTrello -> LocalTrello
+applyLocalTrelloChanges changes trello = foldr localTrelloChange trello changes
 
 makeScreen :: [TrelloItem] -> Cursor TrelloItem
 makeScreen = Cursor.fromList . sortOn pos
@@ -90,8 +100,8 @@ updateHeader s@AppState {screen = screens} =
             context
         }
 
-buildInitialState :: IO AppState
-buildInitialState = do
+buildInitialState :: BChan HaskelloEvent -> IO AppState
+buildInitialState bchan = do
   boards <- getBoards
   let editorState =
         EditorState
@@ -109,6 +119,7 @@ buildInitialState = do
         , changes = []
         , modal = Just err
         , header = "Boards"
+        , bchan = bchan
         }
     Right fetchedBoards -> do
       let boardSorter = sortOn boardLastActivity
@@ -122,4 +133,5 @@ buildInitialState = do
           , changes = []
           , modal = Nothing
           , header = "Boards"
+          , bchan = bchan
           }

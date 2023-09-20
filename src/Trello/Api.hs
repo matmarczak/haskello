@@ -337,5 +337,4 @@ put1 val = State $ \s -> (val, val : s)
 
 pop1 :: State [Int] Int
 pop1 = State $ \(x:xs) -> (x, xs)
-
 -- # how to pop everything from one list?
