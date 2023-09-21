@@ -28,8 +28,8 @@ import Cursor
   , rmCurrent
   )
 import qualified Data.List
-import Data.List (intercalate)
-import Data.Maybe (fromMaybe)
+import Data.List (find, intercalate, reverse)
+import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.String (fromString)
 import Data.Text.Zipper (textZipper)
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -418,10 +418,36 @@ handleOpenItem s@AppState { screen = screens@(screen:_)
             TList _ -> continue $ s {screen = makeScreen children : screens}
             TCard _ -> continue s {modal = Just "No item to open"}
 
+openItemsNoFetch :: [TrelloItem] -> AppState -> AppState
+openItemsNoFetch items s@AppState { serverData = serverData
+                                  , screen = screen
+                                  , changes = changes
+                                  } =
+  case items of
+    [] -> s
+    (fst:[]) ->
+      let restoreCursorPos c =
+            if getCurrent c == Just fst
+              then c
+              else restoreCursorPos $ fromMaybe c $ moveNext c
+       in openItemsNoFetch [] $
+          s
+            { screen = (restoreCursorPos . head) screen : tail screen
+            , modal = Just $ show fst
+            }
+    (fst:rest) ->
+      openItemsNoFetch rest $
+      s
+        { screen =
+            makeScreen (getChildren (applyChanges changes serverData) fst) :
+            screen
+        }
+
 saveStateToServer :: AppState -> IO (Bool, AppState)
 saveStateToServer state@AppState { changes = changes
                                  , bchan = bchan
                                  , serverData = serverData
+                                 , screen = screen
                                  } =
   let orderedChanges =
         Data.List.sortOn
@@ -444,10 +470,22 @@ saveStateToServer state@AppState { changes = changes
                     applyLocalTrelloChanges
                       (map (\tuple -> fmap Just tuple) synced)
                       serverData
+                  replaceItemId ::
+                       [(Change, TrelloItem)] -> TrelloItem -> TrelloItem
+                  replaceItemId syncedChanges item =
+                    maybe item (\(_, newItem) -> newItem) .
+                    find
+                      (\(Change _ oldItem, _) -> itemId oldItem == itemId item) $
+                    synced
+                  path =
+                    reverse $
+                    map (replaceItemId synced) $
+                    catMaybes $ takeWhile isJust (map getCurrent (screen))
               newState <- liftIO $ buildInitialState bchan
               return
                 ( True
-                , newState
+                , openItemsNoFetch path $
+                  newState
                     { changes = []
                     , modal = Just "Changes saved successfully!"
                     , serverData = newTrelloData
