@@ -46,6 +46,9 @@ data LocalTrello =
     }
   deriving (Show)
 
+type SyncedChanges
+   = Either (String, [(Change, TrelloItem)]) ([(Change, TrelloItem)], [Change])
+
 data HaskelloEvent
-  = HaskelloEvent Change
-  | Str String
+  = AsyncHttpSaveToServer
+  | AsyncHttpSaveResult SyncedChanges

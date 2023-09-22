@@ -57,8 +57,9 @@ import State.Types
   , EditorState(showEditor)
   , EditorState(..)
   , FieldLifecycle(..)
-  , HaskelloEvent(HaskelloEvent, Str)
+  , HaskelloEvent(..)
   , ResourceName
+  , SyncedChanges
   )
 import Trello.Api
   ( getBoard
@@ -118,7 +119,7 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
                      continue $ s {modal = Just $ renderShortcuts shortcuts}
                    EvKey (KChar 'q') [MCtrl] -> halt s
                    EvKey (KChar 'q') [] -> do
-                     (shouldHalt, newState) <- liftIO $ saveStateToServer s
+                     (shouldHalt, newState) <- liftIO $ saveStateAndUpdate s
                      if shouldHalt
                        then do
                          halt s
@@ -188,8 +189,8 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
                    EvKey (KChar 'O') [] ->
                      insertItem insertPrev getPosForInsertedAbove s
                    EvKey (KChar 's') [] -> do
-                     (_, newState) <- liftIO $ saveStateToServer s
-                     continue newState
+                     liftIO $ asyncSaveStateToServer s
+                     continue s
                    EvKey (KChar 'd') [] ->
                      case (getCurrent screen, rmCurrent screen) of
                        (Nothing, _) ->
@@ -226,23 +227,25 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
                            restScreens
                        }
                    EvKey (KChar 'b') [] -> do
-                     liftIO $ print changes
-                     continue s
-                   EvKey (KChar 'x') [] -> do
-                     liftIO $ (writeBChan (bchan s) (Str "Starter"))
-                     continue s
+                     continue $ s {modal = Just $ show changes}
                    _ -> continue s
     AppEvent e ->
       case e of
-        HaskelloEvent e' -> continue s
-        Str str -> do
-          let bchanPut =
-                threadDelay (2 * (10 ^ 6)) >>
-                writeBChan (bchan s) (Str "GOt YOU")
-          a <- liftIO $ forkIO bchanPut
-          continue $ s {modal = Just $ show a ++ str}
+        AsyncHttpSaveToServer -> do
+          let saveInThread =
+                forkIO $
+                (threadDelay (10 ^ 6 * 10) >> saveStateAndUpdateAsync s)
+          liftIO saveInThread
+          continue s
+        AsyncHttpSaveResult syncedChanges ->
+          let (_, newState) = stateFromSyncedChagnes syncedChanges s
+           in continue newState
     _ -> continue s
 
+-- todo chenges that are taken to async job are still in state so
+-- for eg in creation items will be added again
+-- there should be some lock mechanism (mvar?) on changes taken for async save
+-- soo at one time only one async job carry the same change
 saveChange :: Change -> IO (Either String TrelloItem)
 saveChange change =
   let Change op item = change
@@ -431,10 +434,7 @@ openItemsNoFetch items s@AppState { serverData = serverData
               then c
               else restoreCursorPos $ fromMaybe c $ moveNext c
        in openItemsNoFetch [] $
-          s
-            { screen = (restoreCursorPos . head) screen : tail screen
-            , modal = Just $ show fst
-            }
+          s {screen = (restoreCursorPos . head) screen : tail screen}
     (fst:rest) ->
       openItemsNoFetch rest $
       s
@@ -443,12 +443,51 @@ openItemsNoFetch items s@AppState { serverData = serverData
             screen
         }
 
-saveStateToServer :: AppState -> IO (Bool, AppState)
-saveStateToServer state@AppState { changes = changes
-                                 , bchan = bchan
-                                 , serverData = serverData
-                                 , screen = screen
-                                 } =
+removeSyncedChanges :: [(Change, TrelloItem)] -> [Change] -> [Change]
+removeSyncedChanges syncedChanges changes =
+  filter (\ch -> not $ ch `elem` (map fst syncedChanges)) changes
+
+--todo breadcrumbs on the header are not resolved properly now
+stateFromSyncedChagnes :: SyncedChanges -> AppState -> (Bool, AppState)
+stateFromSyncedChagnes synced s@AppState { serverData = serverData
+                                         , changes = changes
+                                          -- todo rename to screens?
+                                         , screen = screen
+                                         } =
+  case synced of
+    Left (err, syncedChanges) ->
+      ( False
+      , s
+          { changes = removeSyncedChanges syncedChanges changes
+          , modal = Just err
+          })
+    Right (syncedChanges, []) ->
+      let newTrelloData =
+            applyLocalTrelloChanges
+              (map (\tuple -> fmap Just tuple) syncedChanges)
+              serverData
+          replaceItemId :: [(Change, TrelloItem)] -> TrelloItem -> TrelloItem
+          replaceItemId syncedChanges item =
+            maybe item (\(_, newItem) -> newItem) .
+            find (\(Change _ oldItem, _) -> itemId oldItem == itemId item) $
+            syncedChanges
+          path =
+            reverse $
+            map (replaceItemId syncedChanges) $
+            catMaybes $ takeWhile isJust (map getCurrent (screen))
+       in ( True
+          , openItemsNoFetch path $
+            s
+              { changes = removeSyncedChanges syncedChanges changes
+              , modal = Just "Changes saved successfully!"
+              , serverData = newTrelloData
+              })
+    Right (_, _) ->
+      error "Any unsaved changes should result in Left. Got Right instead!"
+
+--todo check all places where AppState is accessed, if only one field is used - refactor not to pass entire state
+saveChangesToServer :: [Change] -> IO SyncedChanges
+saveChangesToServer changes =
   let orderedChanges =
         Data.List.sortOn
           ((\(Change _ titem) ->
@@ -458,58 +497,73 @@ saveStateToServer state@AppState { changes = changes
                 TCard _ -> 3) :: Change -> Integer)
           changes
    in case orderedChanges of
-        [] -> return (True, state)
-        _ -> do
-          result <- liftIO $ rollSaveChanges (Right ([], orderedChanges))
-          case result of
-            Left (err, leftChanges) -> do
-              newState <- liftIO $ buildInitialState bchan
-              return (False, newState {changes = leftChanges, modal = Just err})
-            Right (synced, []) -> do
-              let newTrelloData =
-                    applyLocalTrelloChanges
-                      (map (\tuple -> fmap Just tuple) synced)
-                      serverData
-                  replaceItemId ::
-                       [(Change, TrelloItem)] -> TrelloItem -> TrelloItem
-                  replaceItemId syncedChanges item =
-                    maybe item (\(_, newItem) -> newItem) .
-                    find
-                      (\(Change _ oldItem, _) -> itemId oldItem == itemId item) $
-                    synced
-                  path =
-                    reverse $
-                    map (replaceItemId synced) $
-                    catMaybes $ takeWhile isJust (map getCurrent (screen))
-              newState <- liftIO $ buildInitialState bchan
-              return
-                ( True
-                , openItemsNoFetch path $
-                  newState
-                    { changes = []
-                    , modal = Just "Changes saved successfully!"
-                    , serverData = newTrelloData
-                    })
-            Right (_, _) ->
-              error
-                "Any unsaved changes should result in Left. Got Right instead!"
+        [] -> return $ Right ([], [])
+        _ -> rollSaveChanges (Right ([], orderedChanges))
 
-type SyncedChanges
-   = Either (String, [Change]) ([(Change, TrelloItem)], [Change])
+saveStateAndUpdate :: AppState -> IO (Bool, AppState)
+saveStateAndUpdate state@AppState {changes = changes} = do
+  syncedChanges <- liftIO $ saveChangesToServer changes
+  return $ stateFromSyncedChagnes syncedChanges state
+
+saveStateAndUpdateAsync :: AppState -> IO ()
+saveStateAndUpdateAsync state@AppState {changes = changes, bchan = bchan} = do
+  syncedChanges <- liftIO $ saveChangesToServer changes
+  liftIO $ writeBChan bchan $ AsyncHttpSaveResult syncedChanges
+
+-- todo add toast that changes were saved? or some pixel?
+-- saveStateAndUpdate :: AppState -> IO (Bool, AppState)
+-- saveStateAndUpdate state@AppState { changes = changes
+--                                   , bchan = bchan
+--                                   , serverData = serverData
+--                                   , screen = screen
+--                                   } = do
+--   result <- liftIO $ saveChangesToServer changes
+--   case result
+--     -- Left (err, leftChanges) -> do
+--     --   newState <- liftIO $ buildInitialState bchan
+--     --   return (False, newState {changes = leftChanges, modal = Just err})
+--         of
+--     Right (synced, []) -> do
+--       let newTrelloData =
+--             applyLocalTrelloChanges
+--               (map (\tuple -> fmap Just tuple) synced)
+--               serverData
+--           replaceItemId :: [(Change, TrelloItem)] -> TrelloItem -> TrelloItem
+--           replaceItemId syncedChanges item =
+--             maybe item (\(_, newItem) -> newItem) .
+--             find (\(Change _ oldItem, _) -> itemId oldItem == itemId item) $
+--             synced
+--           path =
+--             reverse $
+--             map (replaceItemId synced) $
+--             catMaybes $ takeWhile isJust (map getCurrent (screen))
+--       newState <- liftIO $ buildInitialState bchan
+--       return
+--         ( True
+--         , openItemsNoFetch path $
+--           newState
+--             { changes = []
+--             , modal = Just "Changes saved successfully!"
+--             , serverData = newTrelloData
+--             })
+--     Right (_, _) ->
+--       error "Any unsaved changes should result in Left. Got Right instead!"
+asyncSaveStateToServer :: AppState -> IO ()
+asyncSaveStateToServer s = writeBChan (bchan s) AsyncHttpSaveToServer
 
 rollSaveChanges :: SyncedChanges -> IO SyncedChanges
-rollSaveChanges s@(Left _) = return s
-rollSaveChanges s@(Right (_, [])) = return s
-rollSaveChanges (Right (items, fstChange:rest)) = do
-  synced <- saveChange fstChange
+rollSaveChanges synced@(Left _) = return synced
+rollSaveChanges synced@(Right (_, [])) = return synced
+rollSaveChanges (Right (items, change:rest)) = do
+  synced <- saveChange change
   case synced of
-    Left err -> return $ Left (err, fstChange : rest)
-    Right res ->
-      let (Change _ oldItem) = fstChange
+    Left err -> return $ Left (err, items)
+    Right savedItem ->
+      let (Change _ oldItem) = change
        in rollSaveChanges $
           Right
-            ( (fstChange, res) : items
-            , updateChangelistChildren oldItem res rest)
+            ( (change, savedItem) : items
+            , updateChangelistChildren oldItem savedItem rest)
 
 renderShortcuts :: [(String, String)] -> String
 renderShortcuts shortcutsList =
