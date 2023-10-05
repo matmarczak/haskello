@@ -37,6 +37,7 @@ data AppState =
     , header :: String
     , bchan :: BChan HaskelloEvent
     }
+  -- -- todo rm
   -- deriving (Show)
 
 data LocalTrello =

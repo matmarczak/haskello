@@ -100,6 +100,7 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
                                                                 , editorField = editorField
                                                                 }
                          , modal = modal
+                         , serverData = serverData
                          } e =
   case e of
     VtyEvent vtye ->
@@ -228,7 +229,8 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
                            restScreens
                        }
                    EvKey (KChar 'b') [] -> do
-                     continue $ s {modal = Just $ show changes}
+                     liftIO $ writeFile "log.log" (show serverData)
+                     continue $ s {modal = Just $ show (changes ++ lockedChanges)}
                    _ -> continue s
     AppEvent e ->
       case e of
@@ -236,7 +238,7 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
           let saveInThread =
                 forkIO $
                 -- todo: it will be more readable to pas changes as arg here isntead of full state
-                (threadDelay (10 ^ 6 * 10) >> saveStateAndUpdateAsync s)
+                (threadDelay (10 ^ 6 * 1) >> saveStateAndUpdateAsync s)
           liftIO saveInThread
           continue $ s {changes = [], lockedChanges = changes}
         AsyncHttpSaveResult syncedChanges ->
@@ -431,6 +433,14 @@ handleOpenItem s@AppState { screen = screens@(screen:_)
             TList _ -> continue $ s {screen = makeScreen children : screens}
             TCard _ -> continue s {modal = Just "No item to open"}
 
+--todo rethink this as function is obscire and convoluted, maybe don't use recursion? maybe
+--mapping is better?
+-- or get rid of entire Cursor and screen abstractions as they just introduce cache that needs to
+-- be handled, leafe just changes and server data, move cursor to computations
+-- there exists issue with state management, because additional source of state is
+-- [Cursor a]. This is bad because we also need to take care of lifecycle of
+-- screen not lny changes, lockedChanges and serverData
+-- try to remove Screen in next iteration - it will make code better anywa
 openItemsNoFetch :: [TrelloItem] -> AppState -> AppState
 openItemsNoFetch items s@AppState { serverData = serverData
                                   , screen = screen
@@ -443,7 +453,9 @@ openItemsNoFetch items s@AppState { serverData = serverData
       let restoreCursorPos c =
             if getCurrent c == Just fst
               then c
-              else restoreCursorPos $ fromMaybe c $ moveNext c
+              else if isJust $ moveNext c
+                     then restoreCursorPos c
+                     else c
        in openItemsNoFetch [] $
           s {screen = (restoreCursorPos . head) screen : tail screen}
     (fst:rest) ->
@@ -452,7 +464,7 @@ openItemsNoFetch items s@AppState { serverData = serverData
         { screen =
             makeScreen
               (getChildren
-                 (applyChanges (changes ++ lockedChanges) serverData)
+                 (applyChanges changes serverData)
                  fst) :
             screen
         }
@@ -473,8 +485,9 @@ stateFromSyncedChagnes synced s@AppState { serverData = serverData
     Left (err, syncedChanges) ->
       ( False
       , s
-          { changes = removeSyncedChanges syncedChanges changes
-          , lockedChanges = []
+          --todo properly handle api failure here
+          { changes = changes
+          , lockedChanges = removeSyncedChanges syncedChanges lockedChanges
           , modal = Just err
           })
     Right (syncedChanges, []) ->
@@ -492,10 +505,8 @@ stateFromSyncedChagnes synced s@AppState { serverData = serverData
             map (replaceItemId syncedChanges) $
             catMaybes $ takeWhile isJust (map getCurrent (screen))
        in ( True
-          , openItemsNoFetch path $
-            s
-              { changes = removeSyncedChanges syncedChanges lockedChanges
-              , lockedChanges = []
+          , s
+              { lockedChanges = removeSyncedChanges syncedChanges lockedChanges
               , modal = Just "Changes saved successfully!"
               , serverData = newTrelloData
               })
