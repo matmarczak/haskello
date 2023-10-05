@@ -95,6 +95,7 @@ handleUIEvent s@AppState {screen = []} _ =
   continue $ s {modal = Just "Unable to handle event with no screens"}
 handleUIEvent s@AppState { screen = (screen:restScreens)
                          , changes = changes
+                         , lockedChanges = lockedChanges
                          , screenEditor = editorStt@EditorState { showEditor = showEditor
                                                                 , editorField = editorField
                                                                 }
@@ -234,9 +235,10 @@ handleUIEvent s@AppState { screen = (screen:restScreens)
         AsyncHttpSaveToServer -> do
           let saveInThread =
                 forkIO $
+                -- todo: it will be more readable to pas changes as arg here isntead of full state
                 (threadDelay (10 ^ 6 * 10) >> saveStateAndUpdateAsync s)
           liftIO saveInThread
-          continue s
+          continue $ s {changes = [], lockedChanges = changes}
         AsyncHttpSaveResult syncedChanges ->
           let (_, newState) = stateFromSyncedChagnes syncedChanges s
            in continue newState
@@ -378,12 +380,16 @@ handleOpenItem s@AppState {screen = []} =
   continue $ s {modal = Just "Unable to open with no screen"}
 handleOpenItem s@AppState { screen = screens@(screen:_)
                           , changes = changes
+                          , lockedChanges = lockedChanges
                           , serverData = serverData
                           } =
   case getCurrent screen of
     Nothing -> continue $ s {modal = Just "No item to access"}
     Just current ->
-      let children = getChildren (applyChanges changes serverData) current
+      let children =
+            getChildren
+              (applyChanges (changes ++ lockedChanges) serverData)
+              current
        in case current of
             (TBoard b) ->
               case boardId b of
@@ -391,7 +397,9 @@ handleOpenItem s@AppState { screen = screens@(screen:_)
                   continue $
                   let newScreen =
                         makeScreen $
-                        getChildren (applyChanges changes serverData) current
+                        getChildren
+                          (applyChanges (changes ++ lockedChanges) serverData)
+                          current
                    in s {screen = newScreen : screens}
                 ServerId _ ->
                   case children of
@@ -410,7 +418,9 @@ handleOpenItem s@AppState { screen = screens@(screen:_)
                               newScreen =
                                 makeScreen $
                                 getChildren
-                                  (applyChanges changes dataWithCards)
+                                  (applyChanges
+                                     (changes ++ lockedChanges)
+                                     dataWithCards)
                                   current
                            in continue $
                               s
@@ -425,6 +435,7 @@ openItemsNoFetch :: [TrelloItem] -> AppState -> AppState
 openItemsNoFetch items s@AppState { serverData = serverData
                                   , screen = screen
                                   , changes = changes
+                                  , lockedChanges = lockedChanges
                                   } =
   case items of
     [] -> s
@@ -439,7 +450,10 @@ openItemsNoFetch items s@AppState { serverData = serverData
       openItemsNoFetch rest $
       s
         { screen =
-            makeScreen (getChildren (applyChanges changes serverData) fst) :
+            makeScreen
+              (getChildren
+                 (applyChanges (changes ++ lockedChanges) serverData)
+                 fst) :
             screen
         }
 
@@ -452,6 +466,7 @@ stateFromSyncedChagnes :: SyncedChanges -> AppState -> (Bool, AppState)
 stateFromSyncedChagnes synced s@AppState { serverData = serverData
                                          , changes = changes
                                           -- todo rename to screens?
+                                         , lockedChanges = lockedChanges
                                          , screen = screen
                                          } =
   case synced of
@@ -459,6 +474,7 @@ stateFromSyncedChagnes synced s@AppState { serverData = serverData
       ( False
       , s
           { changes = removeSyncedChanges syncedChanges changes
+          , lockedChanges = []
           , modal = Just err
           })
     Right (syncedChanges, []) ->
@@ -478,7 +494,8 @@ stateFromSyncedChagnes synced s@AppState { serverData = serverData
        in ( True
           , openItemsNoFetch path $
             s
-              { changes = removeSyncedChanges syncedChanges changes
+              { changes = removeSyncedChanges syncedChanges lockedChanges
+              , lockedChanges = []
               , modal = Just "Changes saved successfully!"
               , serverData = newTrelloData
               })

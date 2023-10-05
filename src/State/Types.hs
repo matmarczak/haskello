@@ -32,6 +32,7 @@ data AppState =
     , screen :: [Cursor TrelloItem]
     , screenEditor :: EditorState
     , changes :: [Change]
+    , lockedChanges :: [Change]
     , modal :: Maybe String
     , header :: String
     , bchan :: BChan HaskelloEvent
